@@ -1,0 +1,1070 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+╔══════════════════════════════════════════════════════╗
+║         THE EGYPTIAN BAR - Editor de Prompts        ║
+║               CMD Edition | Tkinter GUI             ║
+╚══════════════════════════════════════════════════════╝
+"""
+
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, simpledialog
+import json, os, re
+from datetime import datetime
+
+# ── Icon support (requires Pillow: pip install Pillow) ──
+try:
+    from PIL import Image, ImageTk
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+
+# ══ Colores CMD ═══════════════════════════════════════
+BG        = "#FFFFFF"
+FG        = "#000000"
+BG_SOFT   = "#F5F5F5"
+FG_DIM    = "#666666"
+SEL_BG    = "#000000"
+SEL_FG    = "#FFFFFF"
+TEAL      = "#0D5C5C"          # color del icono
+FONT_MAIN  = ("Consolas", 11)
+FONT_SMALL = ("Consolas", 8)
+FONT_BOLD  = ("Consolas", 11, "bold")
+
+BTN_BASE = dict(
+    bg=BG, fg=FG, relief="flat", bd=0,
+    font=FONT_SMALL, padx=8, pady=3,
+    cursor="hand2",
+    activebackground=FG, activeforeground=BG
+)
+ENTRY_BASE = dict(
+    bg=BG, fg=FG, relief="solid", bd=1,
+    font=("Consolas", 10),
+    insertbackground=FG
+)
+
+APP_NAME   = "The Egyptian Bar"
+APP_ICON   = "syllogisms-4.jpg"   # must be in same folder as the script
+APP_VER    = "v1.0"
+
+# ══ Plantillas ════════════════════════════════════════
+TEMPLATES = {
+    "Basic Prompt": (
+        "## Instruccion\n"
+        "{instruccion}\n"
+    ),
+    "Rol + Tarea": (
+        "## Rol\n"
+        "Eres un {rol} experto en {area}.\n\n"
+        "## Tarea\n"
+        "{tarea}\n\n"
+        "## Contexto\n"
+        "{contexto}\n"
+    ),
+    "Chain of Thought": (
+        "## Instruccion\n"
+        "{instruccion}\n\n"
+        "## Razonamiento\n"
+        "Piensa paso a paso:\n"
+        "1. {paso_1}\n"
+        "2. {paso_2}\n"
+        "3. {paso_3}\n\n"
+        "## Respuesta Final\n"
+        "{respuesta}\n"
+    ),
+    "Few-Shot": (
+        "## Ejemplos\n"
+        "Ejemplo 1:\n"
+        "Entrada: {entrada_1}\n"
+        "Salida:  {salida_1}\n\n"
+        "Ejemplo 2:\n"
+        "Entrada: {entrada_2}\n"
+        "Salida:  {salida_2}\n\n"
+        "## Tu Turno\n"
+        "Entrada: {tu_entrada}\n"
+        "Salida:"
+    ),
+    "System + User": (
+        "[SYSTEM]\n"
+        "{system_message}\n\n"
+        "[USER]\n"
+        "{user_message}\n\n"
+        "[ASSISTANT]\n"
+    ),
+    "Salida Estructurada": (
+        "## Tarea\n"
+        "{tarea}\n\n"
+        "## Formato de Salida\n"
+        "Responde UNICAMENTE en JSON:\n"
+        "```json\n"
+        "{\n"
+        '  \"campo_1\": \"{descripcion_1}\",\n'
+        '  \"campo_2\": \"{descripcion_2}\"\n'
+        "}\n"
+        "```\n"
+    ),
+    "ReAct (Reason+Act)": (
+        "## Tarea\n"
+        "{tarea}\n\n"
+        "Usa el siguiente ciclo:\n\n"
+        "Pensamiento: {pensamiento}\n"
+        "Accion:      {accion}\n"
+        "Observacion: {observacion}\n\n"
+        "Respuesta Final: {respuesta_final}\n"
+    ),
+}
+
+SNIPPETS = [
+    "{rol}", "{tarea}", "{contexto}", "{formato_salida}",
+    "{ejemplos}", "{restricciones}", "{tono}", "{idioma}", "{longitud}",
+]
+
+
+# ══════════════════════════════════════════════════════
+#  CLASE PRINCIPAL
+# ══════════════════════════════════════════════════════
+class EgyptianBar:
+
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title(f"{APP_NAME}  [ CMD Edition ]")
+        self.root.geometry("1280x820")
+        self.root.minsize(900, 600)
+        self.root.configure(bg=BG)
+
+        # ── Icono de ventana ──────────────────────────
+        self._icon_photo = None           # keep reference
+        self._icon_small = None
+        self._load_icon()
+
+        self.current_file = None
+        self.modified     = False
+        self.font_family  = "Consolas"
+        self.font_size    = 11
+        self.word_wrap    = tk.BooleanVar(value=True)
+        self.show_ln      = tk.BooleanVar(value=True)
+        self.sidebar_vis  = True
+
+        self._build_ui()
+        self._bind_shortcuts()
+        self._refresh_title()
+
+    # ── Cargar icono ─────────────────────────────────
+    def _load_icon(self):
+        if not PIL_AVAILABLE:
+            return
+        icon_path = os.path.join(os.path.dirname(__file__), APP_ICON) \
+            if hasattr(__builtins__, '__file__') else APP_ICON
+        if not os.path.exists(APP_ICON):
+            return
+        try:
+            img = Image.open(APP_ICON).convert("RGBA")
+            # Ventana: 48x48
+            big = img.resize((48, 48), Image.LANCZOS)
+            self._icon_photo = ImageTk.PhotoImage(big)
+            self.root.iconphoto(True, self._icon_photo)
+            # Miniatura 24x24 para la barra de titulo interna
+            small = img.resize((24, 24), Image.LANCZOS)
+            self._icon_small = ImageTk.PhotoImage(small)
+        except Exception:
+            pass
+
+    # ── UI ───────────────────────────────────────────
+    def _build_ui(self):
+        self._build_menubar()
+        self._build_titlebar()
+        self._build_toolbar()
+        self._build_body()
+        self._build_statusbar()
+        self._insert_welcome()
+
+    # ── BARRA DE TITULO PERSONALIZADA ────────────────
+    def _build_titlebar(self):
+        tb = tk.Frame(self.root, bg=FG, height=38)
+        tb.pack(side="top", fill="x")
+        tb.pack_propagate(False)
+
+        # Icono + nombre de app
+        inner = tk.Frame(tb, bg=FG)
+        inner.pack(side="left", fill="y", padx=10)
+
+        if self._icon_small:
+            lbl_icon = tk.Label(inner, image=self._icon_small,
+                                bg=FG, bd=0)
+            lbl_icon.pack(side="left", padx=(0, 6), pady=7)
+
+        tk.Label(inner, text=APP_NAME, bg=FG, fg=BG,
+                 font=("Consolas", 11, "bold")).pack(side="left", pady=7)
+
+        tk.Label(tb, text=APP_VER, bg=FG, fg="#AAAAAA",
+                 font=FONT_SMALL).pack(side="left", pady=10, padx=4)
+
+        # Separador visual
+        tk.Frame(tb, bg=TEAL, width=2).pack(side="left", fill="y", pady=6, padx=8)
+        tk.Label(tb, text="Editor de Prompts  |  CMD Edition",
+                 bg=FG, fg="#888888", font=FONT_SMALL).pack(side="left")
+
+    # ── MENUBAR ──────────────────────────────────────
+    def _build_menubar(self):
+        MC = dict(bg=BG, fg=FG, tearoff=0, font=FONT_SMALL,
+                  activebackground=FG, activeforeground=BG)
+        bar = tk.Menu(self.root, bg=BG, fg=FG, font=FONT_SMALL,
+                      activebackground=FG, activeforeground=BG)
+        self.root.config(menu=bar)
+
+        m = tk.Menu(bar, **MC)
+        bar.add_cascade(label=" Archivo ", menu=m)
+        m.add_command(label="Nuevo              Ctrl+N",       command=self.cmd_new)
+        m.add_command(label="Abrir...           Ctrl+O",       command=self.cmd_open)
+        m.add_command(label="Guardar            Ctrl+S",       command=self.cmd_save)
+        m.add_command(label="Guardar como...    Ctrl+Shift+S", command=self.cmd_save_as)
+        m.add_separator()
+        m.add_command(label="Exportar .txt",  command=self.cmd_export_txt)
+        m.add_command(label="Exportar .json", command=self.cmd_export_json)
+        m.add_separator()
+        m.add_command(label="Salir", command=self.cmd_exit)
+
+        m = tk.Menu(bar, **MC)
+        bar.add_cascade(label=" Editar ", menu=m)
+        m.add_command(label="Deshacer           Ctrl+Z", command=self.cmd_undo)
+        m.add_command(label="Rehacer            Ctrl+Y", command=self.cmd_redo)
+        m.add_separator()
+        m.add_command(label="Cortar             Ctrl+X", command=self.cmd_cut)
+        m.add_command(label="Copiar             Ctrl+C", command=self.cmd_copy)
+        m.add_command(label="Pegar              Ctrl+V", command=self.cmd_paste)
+        m.add_separator()
+        m.add_command(label="Seleccionar todo   Ctrl+A", command=self.cmd_select_all)
+        m.add_separator()
+        m.add_command(label="Buscar...          Ctrl+F", command=self.dlg_find)
+        m.add_command(label="Buscar y reemplazar Ctrl+H", command=self.dlg_replace)
+        m.add_command(label="Ir a linea...      Ctrl+G", command=self.dlg_goto)
+
+        m = tk.Menu(bar, **MC)
+        bar.add_cascade(label=" Formato ", menu=m)
+        m.add_command(label="Fuente...",        command=self.dlg_font)
+        m.add_command(label="Zoom +  Ctrl++",   command=self.cmd_zoom_in)
+        m.add_command(label="Zoom -  Ctrl+-",   command=self.cmd_zoom_out)
+        m.add_command(label="Normal  Ctrl+0",   command=self.cmd_zoom_reset)
+        m.add_separator()
+        m.add_checkbutton(label="Word Wrap",        variable=self.word_wrap, command=self._toggle_wrap)
+        m.add_checkbutton(label="Numeros de linea", variable=self.show_ln,   command=self._toggle_ln)
+
+        m = tk.Menu(bar, **MC)
+        bar.add_cascade(label=" Insertar ", menu=m)
+        m.add_command(label="Variable {nombre}", command=self.ins_variable)
+        m.add_command(label="Seccion ## heading", command=self.ins_section)
+        m.add_command(label="Separador ──────────", command=self.ins_separator)
+        m.add_command(label="Bloque de codigo ```", command=self.ins_code_block)
+        m.add_command(label="Lista numerada", command=self.ins_numbered)
+        m.add_command(label="Lista de vinetas", command=self.ins_bullets)
+        m.add_command(label="Fecha y hora", command=self.ins_datetime)
+
+        m = tk.Menu(bar, **MC)
+        bar.add_cascade(label=" Prompts ", menu=m)
+        tsub = tk.Menu(m, **MC)
+        for name in TEMPLATES:
+            tsub.add_command(label=name, command=lambda n=name: self.ins_template(n))
+        m.add_cascade(label="Plantillas >", menu=tsub)
+        m.add_separator()
+        m.add_command(label="Extraer variables",     command=self.dlg_extract_vars)
+        m.add_command(label="Llenar variables",      command=self.dlg_fill_vars)
+        m.add_command(label="Validar estructura",    command=self.dlg_validate)
+        m.add_separator()
+        m.add_command(label="Contar tokens (est.)",  command=self.dlg_tokens)
+        m.add_command(label="Estadisticas",          command=self.dlg_stats)
+
+        m = tk.Menu(bar, **MC)
+        bar.add_cascade(label=" Ver ", menu=m)
+        m.add_command(label="Panel lateral", command=self._toggle_sidebar)
+        m.add_command(label="Zoom +", command=self.cmd_zoom_in)
+        m.add_command(label="Zoom -", command=self.cmd_zoom_out)
+        m.add_command(label="Normal", command=self.cmd_zoom_reset)
+
+    # ── TOOLBAR ──────────────────────────────────────
+    def _build_toolbar(self):
+        tb = tk.Frame(self.root, bg=BG, height=34)
+        tb.pack(side="top", fill="x")
+        tb.pack_propagate(False)
+        tk.Frame(tb, bg=FG, height=1).place(relx=0, rely=1.0, anchor="sw", relwidth=1.0)
+
+        groups = [
+            [("Nuevo",      self.cmd_new),
+             ("Abrir",      self.cmd_open),
+             ("Guardar",    self.cmd_save)],
+            [("Deshacer",   self.cmd_undo),
+             ("Rehacer",    self.cmd_redo)],
+            [("Cortar",     self.cmd_cut),
+             ("Copiar",     self.cmd_copy),
+             ("Pegar",      self.cmd_paste)],
+            [("Buscar",     self.dlg_find),
+             ("Reemplazar", self.dlg_replace)],
+            [("{x} Var",    self.ins_variable),
+             ("Seccion",    self.ins_section),
+             ("Plantilla",  self.dlg_templates)],
+            [("Tokens",     self.dlg_tokens),
+             ("Stats",      self.dlg_stats)],
+        ]
+
+        for i, group in enumerate(groups):
+            if i:
+                tk.Frame(tb, bg="#CCCCCC", width=1).pack(
+                    side="left", fill="y", padx=3, pady=5)
+            for label, cmd in group:
+                b = tk.Button(tb, text=label, command=cmd, **BTN_BASE)
+                b.pack(side="left", padx=1, pady=4)
+
+        rf = tk.Frame(tb, bg=BG)
+        rf.pack(side="right", padx=8)
+        tk.Label(rf, text="pt:", bg=BG, fg=FG, font=FONT_SMALL).pack(side="left")
+        self._sz_var = tk.StringVar(value=str(self.font_size))
+        e = tk.Entry(rf, textvariable=self._sz_var, width=3,
+                     bg=BG, fg=FG, relief="solid", bd=1,
+                     font=FONT_SMALL, insertbackground=FG)
+        e.pack(side="left", padx=2)
+        e.bind("<Return>", self._apply_font_size_entry)
+        tk.Button(rf, text="A+", command=self.cmd_zoom_in,  **BTN_BASE).pack(side="left")
+        tk.Button(rf, text="A-", command=self.cmd_zoom_out, **BTN_BASE).pack(side="left")
+
+    # ── BODY ─────────────────────────────────────────
+    def _build_body(self):
+        self._body = tk.Frame(self.root, bg=BG)
+        self._body.pack(fill="both", expand=True)
+        self._build_sidebar()
+        self._build_editor()
+
+    # ── SIDEBAR ──────────────────────────────────────
+    def _build_sidebar(self):
+        self._sidebar = tk.Frame(self._body, bg=BG, width=210)
+        self._sidebar.pack(side="right", fill="y")
+        self._sidebar.pack_propagate(False)
+        tk.Frame(self._sidebar, bg=FG, width=1).pack(side="left", fill="y")
+
+        # Icono grande en sidebar
+        sc = tk.Frame(self._sidebar, bg=BG)
+        sc.pack(side="left", fill="both", expand=True)
+
+        # Logo en sidebar si PIL disponible
+        if PIL_AVAILABLE and os.path.exists(APP_ICON):
+            try:
+                img = Image.open(APP_ICON).convert("RGBA")
+                logo = img.resize((80, 80), Image.LANCZOS)
+                self._sidebar_logo = ImageTk.PhotoImage(logo)
+                lbl = tk.Label(sc, image=self._sidebar_logo, bg=BG, bd=0)
+                lbl.pack(pady=(12, 4))
+                tk.Label(sc, text=APP_NAME, bg=BG, fg=FG,
+                         font=("Consolas", 7, "bold"),
+                         wraplength=160).pack(pady=(0, 6))
+                tk.Frame(sc, bg=FG, height=1).pack(fill="x", padx=8, pady=4)
+            except Exception:
+                pass
+
+        def lbl(txt):
+            tk.Label(sc, text=txt, bg=BG, fg=FG,
+                     font=("Consolas", 8, "bold"),
+                     anchor="w", padx=8, pady=4).pack(fill="x")
+
+        lbl("[ PLANTILLAS ]")
+        for name in TEMPLATES:
+            b = tk.Button(sc, text=f"> {name}",
+                          bg=BG, fg=FG, relief="flat", bd=0,
+                          font=FONT_SMALL, anchor="w", padx=12, pady=2,
+                          cursor="hand2",
+                          activebackground=FG, activeforeground=BG,
+                          command=lambda n=name: self.ins_template(n))
+            b.pack(fill="x")
+
+        tk.Frame(sc, bg=FG, height=1).pack(fill="x", pady=4, padx=8)
+        lbl("[ SNIPPETS ]")
+        for snip in SNIPPETS:
+            b = tk.Button(sc, text=f"  {snip}",
+                          bg=BG, fg=FG, relief="flat", bd=0,
+                          font=FONT_SMALL, anchor="w", padx=12, pady=2,
+                          cursor="hand2",
+                          activebackground=FG, activeforeground=BG,
+                          command=lambda s=snip: self._insert_at_cursor(s))
+            b.pack(fill="x")
+
+        tk.Frame(sc, bg=FG, height=1).pack(fill="x", pady=4, padx=8)
+        lbl("[ SECCIONES ]")
+        for sec in ["## Rol", "## Tarea", "## Contexto",
+                    "## Ejemplos", "## Restricciones", "## Formato"]:
+            b = tk.Button(sc, text=f"  {sec}",
+                          bg=BG, fg=FG, relief="flat", bd=0,
+                          font=FONT_SMALL, anchor="w", padx=12, pady=2,
+                          cursor="hand2",
+                          activebackground=FG, activeforeground=BG,
+                          command=lambda s=sec: self._insert_at_cursor(f"\n{s}\n"))
+            b.pack(fill="x")
+
+    # ── EDITOR ───────────────────────────────────────
+    def _build_editor(self):
+        ef = tk.Frame(self._body, bg=BG)
+        ef.pack(side="left", fill="both", expand=True)
+
+        tc = tk.Frame(ef, bg=BG)
+        tc.pack(fill="both", expand=True)
+
+        self._ln = tk.Text(
+            tc, width=4, bg=BG_SOFT, fg=FG_DIM,
+            state="disabled", wrap="none",
+            font=(self.font_family, self.font_size),
+            relief="flat", bd=0,
+            selectbackground=BG_SOFT, cursor="arrow"
+        )
+        self._ln.pack(side="left", fill="y")
+        tk.Frame(tc, bg=FG, width=1).pack(side="left", fill="y")
+
+        vs = tk.Scrollbar(tc, orient="vertical",
+                          bg=BG, troughcolor=BG_SOFT, activebackground=FG)
+        vs.pack(side="right", fill="y")
+        hs = tk.Scrollbar(ef, orient="horizontal",
+                          bg=BG, troughcolor=BG_SOFT, activebackground=FG)
+        hs.pack(side="bottom", fill="x")
+
+        self.text = tk.Text(
+            tc,
+            bg=BG, fg=FG,
+            insertbackground=FG,
+            selectbackground=SEL_BG,
+            selectforeground=SEL_FG,
+            font=(self.font_family, self.font_size),
+            relief="flat", bd=10,
+            wrap="word", undo=True,
+            yscrollcommand=lambda f, l: self._on_yscroll(vs, f, l),
+            xscrollcommand=hs.set,
+            spacing1=2, spacing3=2,
+            tabs="4c",
+        )
+        self.text.pack(side="left", fill="both", expand=True)
+
+        vs.config(command=self._vs_cmd)
+        hs.config(command=self.text.xview)
+
+        self._setup_tags()
+        self.text.bind("<<Modified>>",      self._on_modified)
+        self.text.bind("<KeyRelease>",      self._on_key)
+        self.text.bind("<ButtonRelease-1>", self._update_status)
+        self.text.bind("<Configure>",       self._update_ln)
+
+    def _on_yscroll(self, vs, f, l):
+        vs.set(f, l)
+        self._update_ln()
+
+    def _vs_cmd(self, *args):
+        self.text.yview(*args)
+        self._update_ln()
+
+    def _setup_tags(self):
+        f, s = self.font_family, self.font_size
+        self.text.tag_configure("var",     background="#E8E8E8", foreground=FG, font=(f, s, "bold"))
+        self.text.tag_configure("heading", foreground=FG,        font=(f, s, "bold"), underline=True)
+        self.text.tag_configure("comment", foreground=FG_DIM,    font=(f, s, "italic"))
+        self.text.tag_configure("sep",     foreground="#AAAAAA")
+        self.text.tag_configure("found",   background=FG,        foreground=BG)
+
+    # ── STATUSBAR ────────────────────────────────────
+    def _build_statusbar(self):
+        sb = tk.Frame(self.root, bg=BG_SOFT, height=22)
+        sb.pack(side="bottom", fill="x")
+        sb.pack_propagate(False)
+        tk.Frame(sb, bg=FG, height=1).pack(side="top", fill="x")
+        self._sv_status = tk.StringVar(value="  Listo")
+        tk.Label(sb, textvariable=self._sv_status,
+                 bg=BG_SOFT, fg=FG, font=FONT_SMALL, anchor="w"
+                 ).pack(side="left", fill="x", expand=True, padx=4)
+        self._sv_token = tk.StringVar(value="~0 tokens")
+        tk.Label(sb, textvariable=self._sv_token,
+                 bg=BG_SOFT, fg=FG, font=FONT_SMALL).pack(side="right", padx=8)
+        self._sv_chars = tk.StringVar(value="0 chars")
+        tk.Label(sb, textvariable=self._sv_chars,
+                 bg=BG_SOFT, fg=FG, font=FONT_SMALL).pack(side="right", padx=8)
+        self._sv_pos = tk.StringVar(value="Ln 1, Col 1")
+        tk.Label(sb, textvariable=self._sv_pos,
+                 bg=BG_SOFT, fg=FG, font=FONT_SMALL).pack(side="right", padx=8)
+
+    # ── WELCOME ──────────────────────────────────────
+    def _insert_welcome(self):
+        w = (
+            "╔══════════════════════════════════════════════════════════╗\n"
+            "║           THE EGYPTIAN BAR  -  Editor de Prompts        ║\n"
+            "║                    [ CMD  Edition ]                     ║\n"
+            "╚══════════════════════════════════════════════════════════╝\n"
+            "\n"
+            "> Bienvenido. Escribe tu prompt o usa las plantillas del\n"
+            "> panel lateral para comenzar rapidamente.\n"
+            ">\n"
+            "> Atajos principales:\n"
+            ">   Ctrl+N   Nuevo       Ctrl+O   Abrir      Ctrl+S   Guardar\n"
+            ">   Ctrl+F   Buscar      Ctrl+H   Reemplazar Ctrl+G   Ir a linea\n"
+            ">   Ctrl+T   Plantillas  Ctrl++   Zoom+      Ctrl+-   Zoom-\n"
+            ">\n"
+            ">   Las {variables} se resaltan automaticamente en gris.\n"
+            ">   Usa ## Seccion para crear encabezados con estilo.\n"
+            "\n"
+            "──────────────────────────────────────────────────────────────\n"
+            "\n"
+        )
+        self.text.insert("1.0", w)
+        self.text.mark_set("insert", "end")
+        self._highlight_all()
+        self._update_ln()
+        self.text.edit_modified(False)
+        self.modified = False
+
+    # ── HIGHLIGHT ────────────────────────────────────
+    def _highlight_all(self, *_):
+        content = self.text.get("1.0", "end")
+        for tag in ("var", "heading", "comment", "sep"):
+            self.text.tag_remove(tag, "1.0", "end")
+        for pat, tag in [
+            (r"\{[^}]+\}",           "var"),
+            (r"(?m)^#{1,3} .+$",      "heading"),
+            (r"(?m)^\[.+\]$",       "heading"),
+            (r"(?m)^> .*$",           "comment"),
+            (r"(?m)^[\-─═╔╗╚╝║]+$", "sep"),
+        ]:
+            for m in re.finditer(pat, content):
+                self.text.tag_add(tag, f"1.0 + {m.start()}c", f"1.0 + {m.end()}c")
+
+    # ── LINE NUMBERS ─────────────────────────────────
+    def _update_ln(self, *_):
+        if not self.show_ln.get():
+            return
+        self._ln.config(state="normal")
+        self._ln.delete("1.0", "end")
+        total = int(self.text.index("end-1c").split(".")[0])
+        self._ln.insert("1.0", "\n".join(str(i).rjust(3) for i in range(1, total + 1)))
+        self._ln.config(state="disabled")
+        self._ln.yview_moveto(self.text.yview()[0])
+
+    # ── STATUS ───────────────────────────────────────
+    def _update_status(self, *_):
+        try:
+            line, col = self.text.index("insert").split(".")
+            self._sv_pos.set(f"Ln {line}, Col {int(col)+1}")
+            content = self.text.get("1.0", "end-1c")
+            chars, words = len(content), len(content.split())
+            self._sv_chars.set(f"{chars:,} chars | {words:,} palabras")
+            self._sv_token.set(f"~{chars//4:,} tokens")
+            fname = os.path.basename(self.current_file) if self.current_file else "Sin titulo"
+            self._sv_status.set(f"  Listo  -  {fname}")
+        except Exception:
+            pass
+
+    def _on_modified(self, *_):
+        if self.text.edit_modified():
+            self.modified = True
+            self._refresh_title()
+            self._highlight_all()
+            self._update_ln()
+            self.text.edit_modified(False)
+
+    def _on_key(self, *_):
+        self._update_status()
+        self._update_ln()
+
+    def _refresh_title(self):
+        name = os.path.basename(self.current_file) if self.current_file else "Sin titulo"
+        mark = " *" if self.modified else ""
+        self.root.title(f"{APP_NAME}  -  {name}{mark}  [ CMD Edition ]")
+
+    # ── SHORTCUTS ────────────────────────────────────
+    def _bind_shortcuts(self):
+        b = self.root.bind
+        b("<Control-n>",     lambda e: (self.cmd_new(),        "break")[-1])
+        b("<Control-o>",     lambda e: (self.cmd_open(),       "break")[-1])
+        b("<Control-s>",     lambda e: (self.cmd_save(),       "break")[-1])
+        b("<Control-S>",     lambda e: (self.cmd_save_as(),    "break")[-1])
+        b("<Control-f>",     lambda e: (self.dlg_find(),       "break")[-1])
+        b("<Control-h>",     lambda e: (self.dlg_replace(),    "break")[-1])
+        b("<Control-g>",     lambda e: (self.dlg_goto(),       "break")[-1])
+        b("<Control-t>",     lambda e: (self.dlg_templates(),  "break")[-1])
+        b("<Control-a>",     lambda e: (self.cmd_select_all(), "break")[-1])
+        b("<Control-z>",     lambda e: (self.cmd_undo(),       "break")[-1])
+        b("<Control-y>",     lambda e: (self.cmd_redo(),       "break")[-1])
+        b("<Control-equal>", lambda e: (self.cmd_zoom_in(),    "break")[-1])
+        b("<Control-minus>", lambda e: (self.cmd_zoom_out(),   "break")[-1])
+        b("<Control-0>",     lambda e: (self.cmd_zoom_reset(), "break")[-1])
+
+    # ══════════════════════════════════════════════════
+    #  ARCHIVO
+    # ══════════════════════════════════════════════════
+    def cmd_new(self):
+        if self.modified and not messagebox.askyesno("Nuevo", "Descartar cambios?"):
+            return
+        self.text.delete("1.0", "end")
+        self.current_file = None
+        self.modified = False
+        self._insert_welcome()
+        self._refresh_title()
+
+    def cmd_open(self):
+        fn = filedialog.askopenfilename(
+            filetypes=[("Prompt/Texto/Markdown", "*.prompt *.txt *.md"), ("Todos", "*.*")])
+        if not fn:
+            return
+        with open(fn, encoding="utf-8") as f:
+            self.text.delete("1.0", "end")
+            self.text.insert("1.0", f.read())
+        self.current_file = fn
+        self.modified = False
+        self._highlight_all()
+        self._update_ln()
+        self._refresh_title()
+
+    def cmd_save(self):
+        if self.current_file:
+            with open(self.current_file, "w", encoding="utf-8") as f:
+                f.write(self.text.get("1.0", "end-1c"))
+            self.modified = False
+            self._refresh_title()
+            self._sv_status.set(f"  Guardado: {self.current_file}")
+        else:
+            self.cmd_save_as()
+
+    def cmd_save_as(self):
+        fn = filedialog.asksaveasfilename(
+            defaultextension=".prompt",
+            filetypes=[("Prompt", "*.prompt"), ("Texto", "*.txt"),
+                       ("Markdown", "*.md"), ("Todos", "*.*")])
+        if not fn:
+            return
+        with open(fn, "w", encoding="utf-8") as f:
+            f.write(self.text.get("1.0", "end-1c"))
+        self.current_file = fn
+        self.modified = False
+        self._refresh_title()
+
+    def cmd_export_txt(self):
+        fn = filedialog.asksaveasfilename(defaultextension=".txt",
+                                          filetypes=[("Texto", "*.txt")])
+        if fn:
+            with open(fn, "w", encoding="utf-8") as f:
+                f.write(self.text.get("1.0", "end-1c"))
+
+    def cmd_export_json(self):
+        fn = filedialog.asksaveasfilename(defaultextension=".json",
+                                          filetypes=[("JSON", "*.json")])
+        if not fn:
+            return
+        content   = self.text.get("1.0", "end-1c")
+        variables = list(set(re.findall(r"\{([^}]+)\}", content)))
+        data = {
+            "prompt":    content,
+            "variables": variables,
+            "metadata":  {
+                "app":            APP_NAME,
+                "created":        datetime.now().isoformat(),
+                "char_count":     len(content),
+                "token_estimate": len(content) // 4,
+            }
+        }
+        with open(fn, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def cmd_exit(self):
+        if self.modified and not messagebox.askyesno("Salir", "Salir sin guardar?"):
+            return
+        self.root.quit()
+
+    # ══════════════════════════════════════════════════
+    #  EDICION
+    # ══════════════════════════════════════════════════
+    def cmd_undo(self):
+        try: self.text.edit_undo()
+        except: pass
+    def cmd_redo(self):
+        try: self.text.edit_redo()
+        except: pass
+    def cmd_cut(self):   self.text.event_generate("<<Cut>>")
+    def cmd_copy(self):  self.text.event_generate("<<Copy>>")
+    def cmd_paste(self): self.text.event_generate("<<Paste>>")
+    def cmd_select_all(self):
+        self.text.tag_add("sel", "1.0", "end")
+
+    # ══════════════════════════════════════════════════
+    #  FORMATO / VISTA
+    # ══════════════════════════════════════════════════
+    def cmd_zoom_in(self):
+        self.font_size = min(self.font_size + 1, 32); self._apply_font()
+    def cmd_zoom_out(self):
+        self.font_size = max(self.font_size - 1, 6);  self._apply_font()
+    def cmd_zoom_reset(self):
+        self.font_size, self.font_family = 11, "Consolas"; self._apply_font()
+
+    def _apply_font(self):
+        f = (self.font_family, self.font_size)
+        self.text.config(font=f)
+        self._ln.config(font=f)
+        self._sz_var.set(str(self.font_size))
+        self._setup_tags()
+        self._update_ln()
+
+    def _apply_font_size_entry(self, *_):
+        try:
+            self.font_size = max(6, min(int(self._sz_var.get()), 32))
+            self._apply_font()
+        except ValueError:
+            pass
+
+    def _toggle_wrap(self):
+        self.text.config(wrap="word" if self.word_wrap.get() else "none")
+
+    def _toggle_ln(self):
+        if self.show_ln.get():
+            self._ln.pack(side="left", fill="y", before=self.text)
+            self._update_ln()
+        else:
+            self._ln.pack_forget()
+
+    def _toggle_sidebar(self):
+        if self.sidebar_vis:
+            self._sidebar.pack_forget()
+        else:
+            self._sidebar.pack(side="right", fill="y")
+        self.sidebar_vis = not self.sidebar_vis
+
+    # ══════════════════════════════════════════════════
+    #  INSERTAR
+    # ══════════════════════════════════════════════════
+    def _insert_at_cursor(self, s):
+        self.text.insert("insert", s)
+        self.text.focus_set()
+
+    def ins_variable(self):
+        name = simpledialog.askstring("Variable",
+            "Nombre de la variable (sin llaves):", parent=self.root)
+        if name:
+            self._insert_at_cursor(f"{{{name}}}")
+
+    def ins_section(self):
+        name = simpledialog.askstring("Seccion", "Nombre:", parent=self.root)
+        if name:
+            self._insert_at_cursor(f"\n## {name}\n")
+
+    def ins_separator(self):
+        self._insert_at_cursor("\n" + "─" * 58 + "\n")
+
+    def ins_code_block(self):
+        lang = simpledialog.askstring("Bloque", "Lenguaje:", parent=self.root) or ""
+        self._insert_at_cursor(f"\n```{lang}\n\n```\n")
+
+    def ins_numbered(self):
+        n = simpledialog.askinteger("Lista numerada", "Items:",
+                                    parent=self.root, initialvalue=3)
+        if n:
+            self._insert_at_cursor("\n" + "\n".join(f"{i}. " for i in range(1, n+1)) + "\n")
+
+    def ins_bullets(self):
+        n = simpledialog.askinteger("Lista vinetas", "Items:",
+                                    parent=self.root, initialvalue=3)
+        if n:
+            self._insert_at_cursor("\n" + "\n".join("- " for _ in range(n)) + "\n")
+
+    def ins_datetime(self):
+        self._insert_at_cursor(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    def ins_template(self, name):
+        tpl = TEMPLATES.get(name, "")
+        self._insert_at_cursor(f"\n{tpl}\n")
+        self._sv_status.set(f"  Plantilla: {name}")
+
+    # ══════════════════════════════════════════════════
+    #  DIALOGOS
+    # ══════════════════════════════════════════════════
+    def _dlg(self, title, w, h, resize=False):
+        d = tk.Toplevel(self.root)
+        d.title(title)
+        d.geometry(f"{w}x{h}")
+        d.configure(bg=BG)
+        d.resizable(resize, resize)
+        d.transient(self.root)
+        # heredar icono
+        if self._icon_photo:
+            try: d.iconphoto(False, self._icon_photo)
+            except: pass
+        return d
+
+    def dlg_find(self):
+        d = self._dlg("Buscar", 430, 130)
+        tk.Label(d, text="Buscar:", bg=BG, fg=FG, font=FONT_MAIN
+                 ).grid(row=0, column=0, padx=12, pady=14, sticky="e")
+        sv = tk.StringVar()
+        e = tk.Entry(d, textvariable=sv, **ENTRY_BASE, width=26)
+        e.grid(row=0, column=1, padx=12, pady=14); e.focus()
+        rv = tk.StringVar()
+        tk.Label(d, textvariable=rv, bg=BG, fg=FG_DIM, font=FONT_SMALL
+                 ).grid(row=1, column=0, columnspan=2, padx=12)
+        def do():
+            term = sv.get()
+            if not term: return
+            self.text.tag_remove("found", "1.0", "end")
+            cnt, pos = 0, "1.0"
+            while True:
+                pos = self.text.search(term, pos, stopindex="end", nocase=True)
+                if not pos: break
+                end = f"{pos}+{len(term)}c"
+                self.text.tag_add("found", pos, end)
+                pos = end; cnt += 1
+            if cnt:
+                first = self.text.search(term, "1.0", nocase=True)
+                if first: self.text.see(first)
+                rv.set(f"  {cnt} coincidencias encontradas")
+            else:
+                rv.set("  No se encontro el termino")
+        def close():
+            self.text.tag_remove("found", "1.0", "end"); d.destroy()
+        B = dict(**BTN_BASE, relief="solid", bd=1)
+        tk.Button(d, text="Buscar", command=do,    **B).grid(row=2, column=0, padx=12, pady=8, sticky="e")
+        tk.Button(d, text="Cerrar", command=close, **B).grid(row=2, column=1, padx=12, pady=8, sticky="w")
+        d.bind("<Return>", lambda *_: do())
+        d.bind("<Escape>", lambda *_: close())
+
+    def dlg_replace(self):
+        d = self._dlg("Buscar y Reemplazar", 470, 195)
+        E = dict(**ENTRY_BASE, width=26)
+        B = dict(**BTN_BASE, relief="solid", bd=1)
+        tk.Label(d, text="Buscar:",     bg=BG, fg=FG, font=FONT_MAIN).grid(row=0, column=0, padx=12, pady=10, sticky="e")
+        tk.Label(d, text="Reemplazar:", bg=BG, fg=FG, font=FONT_MAIN).grid(row=1, column=0, padx=12, pady=6,  sticky="e")
+        sv, rv = tk.StringVar(), tk.StringVar()
+        tk.Entry(d, textvariable=sv, **E).grid(row=0, column=1, padx=12, pady=10)
+        tk.Entry(d, textvariable=rv, **E).grid(row=1, column=1, padx=12, pady=6)
+        info = tk.StringVar()
+        tk.Label(d, textvariable=info, bg=BG, fg=FG_DIM, font=FONT_SMALL
+                 ).grid(row=2, column=0, columnspan=2, padx=12)
+        def rep_all():
+            term = sv.get()
+            if not term: return
+            content = self.text.get("1.0", "end-1c")
+            cnt = content.count(term)
+            if cnt:
+                self.text.delete("1.0", "end")
+                self.text.insert("1.0", content.replace(term, rv.get()))
+                self._highlight_all()
+                info.set(f"  {cnt} reemplazos")
+            else:
+                info.set("  Termino no encontrado")
+        tk.Button(d, text="Reemplazar todo", command=rep_all, **B).grid(row=3, column=0, padx=12, pady=12, sticky="e")
+        tk.Button(d, text="Cerrar", command=d.destroy, **B).grid(row=3, column=1, padx=12, pady=12, sticky="w")
+
+    def dlg_goto(self):
+        n = simpledialog.askinteger("Ir a linea", "Numero de linea:", parent=self.root)
+        if n:
+            self.text.mark_set("insert", f"{n}.0")
+            self.text.see(f"{n}.0")
+            self._update_status()
+
+    def dlg_font(self):
+        d = self._dlg("Configurar Fuente", 360, 210)
+        fonts = ["Consolas", "Courier New", "Lucida Console",
+                 "Cascadia Code", "Source Code Pro", "Monaco"]
+        tk.Label(d, text="Familia:", bg=BG, fg=FG, font=FONT_MAIN
+                 ).grid(row=0, column=0, padx=12, pady=14, sticky="e")
+        fv = tk.StringVar(value=self.font_family)
+        ttk.Combobox(d, textvariable=fv, values=fonts, font=("Consolas", 10), width=22
+                     ).grid(row=0, column=1, padx=12, pady=14)
+        tk.Label(d, text="Tamano:", bg=BG, fg=FG, font=FONT_MAIN
+                 ).grid(row=1, column=0, padx=12, pady=6, sticky="e")
+        sv = tk.StringVar(value=str(self.font_size))
+        tk.Entry(d, textvariable=sv, **ENTRY_BASE, width=5
+                 ).grid(row=1, column=1, padx=12, pady=6, sticky="w")
+        B = dict(**BTN_BASE, relief="solid", bd=1)
+        def apply():
+            self.font_family = fv.get()
+            try: self.font_size = int(sv.get())
+            except: pass
+            self._apply_font(); d.destroy()
+        tk.Button(d, text="Aplicar",  command=apply,     **B).grid(row=2, column=0, padx=12, pady=20)
+        tk.Button(d, text="Cancelar", command=d.destroy, **B).grid(row=2, column=1, padx=12, pady=20)
+
+    def dlg_templates(self):
+        d = tk.Toplevel(self.root)
+        d.title("Seleccionar Plantilla"); d.geometry("370x330")
+        d.configure(bg=BG); d.transient(self.root); d.grab_set()
+        if self._icon_photo:
+            try: d.iconphoto(False, self._icon_photo)
+            except: pass
+        tk.Label(d, text="[ PLANTILLAS DISPONIBLES ]",
+                 bg=BG, fg=FG, font=FONT_BOLD).pack(pady=10)
+        lb = tk.Listbox(d, bg=BG, fg=FG,
+                        selectbackground=FG, selectforeground=BG,
+                        font=FONT_MAIN, relief="solid", bd=1, activestyle="none")
+        lb.pack(fill="both", expand=True, padx=12, pady=4)
+        for name in TEMPLATES:
+            lb.insert("end", f"  > {name}")
+        def apply():
+            sel = lb.curselection()
+            if sel:
+                self.ins_template(list(TEMPLATES.keys())[sel[0]]); d.destroy()
+        tk.Button(d, text="Insertar", command=apply,
+                  bg=FG, fg=BG, relief="flat", bd=0, font=FONT_MAIN,
+                  padx=14, pady=5, activebackground="#333",
+                  cursor="hand2").pack(pady=10)
+        lb.bind("<Double-Button-1>", lambda *_: apply())
+        lb.bind("<Return>",          lambda *_: apply())
+
+    def dlg_extract_vars(self):
+        content   = self.text.get("1.0", "end-1c")
+        variables = sorted(set(re.findall(r"\{([^}]+)\}", content)))
+        if not variables:
+            messagebox.showinfo("Variables", "No se encontraron variables {…}."); return
+        d = self._dlg("Variables detectadas", 360, 320, resize=True)
+        tk.Label(d, text="[ VARIABLES ENCONTRADAS ]",
+                 bg=BG, fg=FG, font=FONT_BOLD).pack(pady=10)
+        t = tk.Text(d, bg=BG, fg=FG, font=FONT_MAIN, relief="solid", bd=1, insertbackground=FG)
+        t.pack(fill="both", expand=True, padx=12, pady=4)
+        for v in variables:
+            t.insert("end", f"  {{{v}}}\n")
+        t.config(state="disabled")
+        tk.Button(d, text="Copiar lista",
+                  command=lambda: self._clip("\n".join(variables)),
+                  **BTN_BASE, relief="solid", bd=1).pack(pady=8)
+
+    def dlg_fill_vars(self):
+        content   = self.text.get("1.0", "end-1c")
+        variables = sorted(set(re.findall(r"\{([^}]+)\}", content)))
+        if not variables:
+            messagebox.showinfo("Variables", "No hay variables {…} en el documento."); return
+        d = tk.Toplevel(self.root)
+        d.title("Llenar Variables")
+        d.geometry(f"530x{min(130 + len(variables)*50, 580)}")
+        d.configure(bg=BG); d.transient(self.root)
+        if self._icon_photo:
+            try: d.iconphoto(False, self._icon_photo)
+            except: pass
+        tk.Label(d, text="[ LLENAR VARIABLES ]",
+                 bg=BG, fg=FG, font=FONT_BOLD).pack(pady=8)
+        canvas = tk.Canvas(d, bg=BG, highlightthickness=0)
+        scroll = tk.Scrollbar(d, orient="vertical", command=canvas.yview,
+                              bg=BG, troughcolor=BG_SOFT)
+        frm    = tk.Frame(canvas, bg=BG)
+        frm.bind("<Configure>", lambda *_: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=frm, anchor="nw")
+        canvas.configure(yscrollcommand=scroll.set)
+        canvas.pack(side="left", fill="both", expand=True, padx=12)
+        scroll.pack(side="right", fill="y")
+        entries = {}
+        for var in variables:
+            row = tk.Frame(frm, bg=BG)
+            row.pack(fill="x", pady=3, padx=8)
+            tk.Label(row, text=f"{{{var}}}:", bg=BG, fg=FG,
+                     font=("Consolas", 9), width=24, anchor="e").pack(side="left")
+            ent = tk.Entry(row, **ENTRY_BASE, width=28)
+            ent.pack(side="left", padx=6)
+            entries[var] = ent
+        def generate():
+            result = content
+            for var, ent in entries.items():
+                val = ent.get()
+                if val:
+                    result = result.replace(f"{{{var}}}", val)
+            rd = tk.Toplevel(self.root)
+            rd.title("Prompt Generado"); rd.geometry("660x520"); rd.configure(bg=BG)
+            if self._icon_photo:
+                try: rd.iconphoto(False, self._icon_photo)
+                except: pass
+            tk.Label(rd, text="[ PROMPT GENERADO ]",
+                     bg=BG, fg=FG, font=FONT_BOLD).pack(pady=8)
+            rt = tk.Text(rd, bg=BG, fg=FG, font=FONT_MAIN, relief="solid", bd=1,
+                         insertbackground=FG, wrap="word")
+            rt.pack(fill="both", expand=True, padx=12, pady=4)
+            rt.insert("1.0", result)
+            tk.Button(rd, text="Copiar al portapapeles",
+                      command=lambda: self._clip(result),
+                      bg=FG, fg=BG, relief="flat", bd=0, font=FONT_MAIN,
+                      padx=12, pady=5, activebackground="#333",
+                      cursor="hand2").pack(pady=8)
+            d.destroy()
+        tk.Button(d, text="Generar Prompt", command=generate,
+                  bg=FG, fg=BG, relief="flat", bd=0, font=FONT_MAIN,
+                  padx=14, pady=6, activebackground="#333",
+                  cursor="hand2").pack(pady=10)
+
+    def dlg_validate(self):
+        content = self.text.get("1.0", "end-1c")
+        chars   = len(content)
+        tokens  = chars // 4
+        issues, tips = [], []
+        PAT = r"\{([^}]+)\}"
+        if re.search(r"\{[^}]*$", content, re.MULTILINE):
+            issues.append("[!] Variables sin cerrar detectadas")
+        if tokens > 4000:
+            issues.append(f"[!] Prompt largo: ~{tokens} tokens")
+        if not re.search(r"\{rol\}|\[SYSTEM\]|## Rol|You are", content):
+            tips.append("[?] Sin definicion de rol/sistema")
+        if not re.search(r"## Tarea|## Task|\{tarea\}", content):
+            tips.append("[?] Sin seccion de tarea explicita")
+        if not re.search(r"```|JSON|json|formato|Formato", content):
+            tips.append("[?] Sin formato de salida")
+        d = self._dlg("Validacion", 510, 380, resize=True)
+        tk.Label(d, text="[ VALIDACION DEL PROMPT ]",
+                 bg=BG, fg=FG, font=FONT_BOLD).pack(pady=8)
+        t = tk.Text(d, bg=BG, fg=FG, font=("Consolas", 9), relief="solid", bd=1,
+                    insertbackground=FG, wrap="word")
+        t.pack(fill="both", expand=True, padx=12, pady=4)
+        if not issues:
+            t.insert("end", "  [OK] Sin errores criticos.\n\n")
+        else:
+            t.insert("end", "  PROBLEMAS:\n")
+            for i in issues: t.insert("end", f"  {i}\n")
+            t.insert("end", "\n")
+        if tips:
+            t.insert("end", "  SUGERENCIAS:\n")
+            for tip in tips: t.insert("end", f"  {tip}\n")
+        t.insert("end",
+                 f"\n  ESTADISTICAS:\n"
+                 f"  Caracteres : {chars:,}\n"
+                 f"  Palabras   : {len(content.split()):,}\n"
+                 f"  Tokens     : ~{tokens:,}\n"
+                 f"  Variables  : {len(set(re.findall(PAT, content)))}\n")
+        t.config(state="disabled")
+        tk.Button(d, text="Cerrar", command=d.destroy,
+                  **BTN_BASE, relief="solid", bd=1).pack(pady=8)
+
+    def dlg_tokens(self):
+        content = self.text.get("1.0", "end-1c")
+        chars   = len(content)
+        words   = len(content.split())
+        t1, t2  = chars // 4, int(words * 1.3)
+        avg     = (t1 + t2) // 2
+        messagebox.showinfo("Contador de Tokens",
+            f"ESTIMACION DE TOKENS\n\n"
+            f"Caracteres         : {chars:,}\n"
+            f"Palabras           : {words:,}\n"
+            f"Tokens (chars/4)   : ~{t1:,}\n"
+            f"Tokens (words x1.3): ~{t2:,}\n"
+            f"Promedio estimado  : ~{avg:,}\n\n"
+            f"Costo ref. GPT-4o:\n"
+            f"  Input  : ~${avg*0.000005:.4f} USD\n"
+            f"  Output : ~${avg*0.000015:.4f} USD")
+
+    def dlg_stats(self):
+        content   = self.text.get("1.0", "end-1c")
+        lines     = content.split("\n")
+        variables = set(re.findall(r"\{([^}]+)\}", content))
+        sections  = re.findall(r"(?m)^#{1,3} .+$", content)
+        messagebox.showinfo("Estadisticas",
+            f"ESTADISTICAS DEL PROMPT\n\n"
+            f"Lineas totales    : {len(lines):,}\n"
+            f"Lineas no vacias  : {sum(1 for l in lines if l.strip()):,}\n"
+            f"Palabras          : {len(content.split()):,}\n"
+            f"Caracteres        : {len(content):,}\n"
+            f"Tokens estimados  : ~{len(content)//4:,}\n\n"
+            f"Secciones ##      : {len(sections)}\n"
+            f"Variables unicas  : {len(variables)}\n"
+            f"Variables         : {', '.join(sorted(variables)) or 'ninguna'}")
+
+    def _clip(self, text):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self._sv_status.set("  Copiado al portapapeles")
+
+
+# ══════════════════════════════════════════════════════
+#  ENTRY POINT
+# ══════════════════════════════════════════════════════
+if __name__ == "__main__":
+    root = tk.Tk()
+    app  = EgyptianBar(root)
+    root.protocol("WM_DELETE_WINDOW", app.cmd_exit)
+    root.mainloop()
